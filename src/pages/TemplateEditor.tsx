@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -15,12 +15,23 @@ import {
   X,
   ChevronDown,
   History,
+  Upload,
+  AlertTriangle,
+  CheckCircle,
+  Loader2,
 } from 'lucide-react';
 import { useAppStore } from '@/store/appStore';
 import PageHeader from '@/components/PageHeader';
 import { cn } from '@/lib/utils';
 import { v4 as uuidv4 } from 'uuid';
 import type { ModalityBlock, PromptTemplate, TemplateVariable, ModalityType } from '@shared/types';
+import {
+  validateImageFile,
+  compressImage,
+  validateImageDataUrl,
+  formatFileSize,
+  type CompressResult,
+} from '@/utils/imageCompressor';
 
 const TABS: { key: ModalityType | 'variables'; label: string; icon: any; color: string }[] = [
   { key: 'text', label: '文本', icon: FileText, color: 'text-brand-accent' },
@@ -42,7 +53,7 @@ export default function TemplateEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
   const isEdit = !!id;
-  const { templates, fetchTemplates, fetchTemplate, createTemplate, updateTemplate, models, fetchModels, renderTemplate } =
+  const { templates, fetchTemplates, fetchTemplate, createTemplate, updateTemplate, models, fetchModels, renderTemplate, fetchImageConstraints } =
     useAppStore();
 
   const [form, setForm] = useState<Partial<PromptTemplate>>({
@@ -61,9 +72,15 @@ export default function TemplateEditor() {
   const [previewContent, setPreviewContent] = useState('');
   const [previewVars, setPreviewVars] = useState<Record<string, any>>({});
   const [saving, setSaving] = useState(false);
+  const [imageUploading, setImageUploading] = useState<string | null>(null);
+  const [imageErrors, setImageErrors] = useState<Record<string, string>>({});
+  const [imageInfos, setImageInfos] = useState<Record<string, { original: number; compressed: number; wasCompressed: boolean }>>({});
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadTargetBlock, setUploadTargetBlock] = useState<string | null>(null);
 
   useEffect(() => {
     fetchModels();
+    fetchImageConstraints();
     if (isEdit) {
       fetchTemplates().then(() => {
         const tpl = templates.find((t) => t.id === id);
@@ -73,7 +90,51 @@ export default function TemplateEditor() {
         }
       });
     }
-  }, [id, isEdit, fetchTemplates, fetchModels, templates]);
+  }, [id, isEdit, fetchTemplates, fetchModels, fetchImageConstraints, templates]);
+
+  const handleImageUpload = async (blockId: string, file: File) => {
+    const maxMB = useAppStore.getState().imageConstraints?.MAX_IMAGE_SIZE_MB || 5;
+    const validation = validateImageFile(file, maxMB);
+    if (!validation.valid) {
+      setImageErrors({ ...imageErrors, [blockId]: validation.error! });
+      return;
+    }
+
+    setImageUploading(blockId);
+    setImageErrors({ ...imageErrors, [blockId]: '' });
+
+    try {
+      const result: CompressResult = await compressImage(file, { maxSizeMB: maxMB });
+      updateBlock(blockId, { url: result.dataUrl });
+      setImageInfos({
+        ...imageInfos,
+        [blockId]: {
+          original: result.originalSizeMB,
+          compressed: result.compressedSizeMB,
+          wasCompressed: result.wasCompressed,
+        },
+      });
+      setImageErrors({ ...imageErrors, [blockId]: '' });
+    } catch (err: any) {
+      setImageErrors({ ...imageErrors, [blockId]: err.message || '图片处理失败' });
+    } finally {
+      setImageUploading(null);
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && uploadTargetBlock) {
+      handleImageUpload(uploadTargetBlock, file);
+    }
+    setUploadTargetBlock(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const triggerFileUpload = (blockId: string) => {
+    setUploadTargetBlock(blockId);
+    fileInputRef.current?.click();
+  };
 
   const updateForm = <K extends keyof PromptTemplate>(key: K, value: PromptTemplate[K]) => {
     setForm({ ...form, [key]: value });
@@ -382,15 +443,62 @@ export default function TemplateEditor() {
 
                       {block.type === 'image' && (
                         <div className="space-y-3">
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept="image/jpeg,image/png,image/gif,image/webp"
+                            className="hidden"
+                            onChange={handleFileInputChange}
+                          />
                           <div>
-                            <label className="text-xs text-text-muted mb-1 block">图片URL</label>
-                            <input
-                              className="input font-mono text-sm"
-                              placeholder="https://example.com/image.png"
-                              value={block.url}
-                              onChange={(e) => updateBlock(block.id, { url: e.target.value })}
-                            />
+                            <label className="text-xs text-text-muted mb-1 block">图片URL / 上传图片</label>
+                            <div className="flex gap-2">
+                              <input
+                                className="input font-mono text-sm flex-1"
+                                placeholder="https://example.com/image.png"
+                                value={block.url && !block.url.startsWith('data:') ? block.url : ''}
+                                onChange={(e) => updateBlock(block.id, { url: e.target.value })}
+                              />
+                              <button
+                                className={cn(
+                                  'btn-secondary flex items-center gap-2 whitespace-nowrap',
+                                  imageUploading === block.id && 'opacity-50 cursor-not-allowed'
+                                )}
+                                onClick={() => triggerFileUpload(block.id)}
+                                disabled={imageUploading === block.id}
+                              >
+                                {imageUploading === block.id ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <Upload className="w-4 h-4" />
+                                )}
+                                {imageUploading === block.id ? '压缩中...' : '上传图片'}
+                              </button>
+                            </div>
+                            <p className="text-xs text-text-muted mt-1">
+                              支持 JPG/PNG/GIF/WebP，最大 {useAppStore.getState().imageConstraints?.MAX_IMAGE_SIZE_MB || 5}MB
+                              {block.url && !block.url.startsWith('data://') && ' · 远程URL图片将在服务端校验大小'}
+                            </p>
                           </div>
+                          {imageErrors[block.id] && (
+                            <div className="flex items-start gap-2 p-3 rounded-lg bg-danger/10 border border-danger/30">
+                              <AlertTriangle className="w-4 h-4 text-danger shrink-0 mt-0.5" />
+                              <p className="text-sm text-danger">{imageErrors[block.id]}</p>
+                            </div>
+                          )}
+                          {imageInfos[block.id] && (
+                            <div className="flex items-start gap-2 p-3 rounded-lg bg-success/10 border border-success/30">
+                              <CheckCircle className="w-4 h-4 text-success shrink-0 mt-0.5" />
+                              <div className="text-sm">
+                                <p className="text-success">
+                                  图片已{imageInfos[block.id].wasCompressed ? '压缩' : '就绪'}
+                                  {imageInfos[block.id].wasCompressed && (
+                                    <>：{formatFileSize(imageInfos[block.id].original)} → {formatFileSize(imageInfos[block.id].compressed)}</>
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+                          )}
                           <div>
                             <label className="text-xs text-text-muted mb-1 block">Alt描述（可选）</label>
                             <input

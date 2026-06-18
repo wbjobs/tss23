@@ -184,3 +184,30 @@ export interface GatewayChatResponse {
   latencyMs: number;
   evaluation?: EvaluationResult;
 }
+
+export enum GatewayErrorCode {
+  MODEL_NOT_FOUND = 'GATEWAY_MODEL_NOT_FOUND',
+  MODEL_DISABLED = 'GATEWAY_MODEL_DISABLED',
+  POOL_EXHAUSTED = 'GATEWAY_POOL_EXHAUSTED',
+  POOL_QUEUE_TIMEOUT = 'GATEWAY_QUEUE_TIMEOUT',
+  IMAGE_TOO_LARGE = 'GATEWAY_IMAGE_TOO_LARGE',
+  IMAGE_FETCH_FAILED = 'GATEWAY_IMAGE_FETCH_FAILED',
+  IMAGE_ENCODING_FAILED = 'GATEWAY_IMAGE_ENCODING_FAILED',
+  PAYLOAD_TOO_LARGE = 'GATEWAY_PAYLOAD_TOO_LARGE',
+  TEMPLATE_NOT_FOUND = 'GATEWAY_TEMPLATE_NOT_FOUND',
+  INTERNAL_ERROR = 'GATEWAY_INTERNAL_ERROR',
+}
+
+export interface GatewayErrorResponse {
+  success: false;
+  code: GatewayErrorCode;
+  message: string;
+  detail?: string;
+}
+
+export interface ImageConstraints {
+  MAX_IMAGE_SIZE_MB: number;
+  MAX_TOTAL_PAYLOAD_MB: number;
+  ALLOWED_IMAGE_TYPES: string[];
+  ALLOWED_IMAGE_EXTENSIONS: string[];
+}

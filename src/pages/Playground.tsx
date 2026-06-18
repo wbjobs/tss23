@@ -13,12 +13,104 @@ import {
   Cpu,
   FileText,
   Zap,
+  AlertCircle,
+  RefreshCw,
+  ImageOff,
+  ServerCrash,
 } from 'lucide-react';
-import { useAppStore } from '@/store/appStore';
+import { useAppStore, GatewayClientError } from '@/store/appStore';
 import PageHeader from '@/components/PageHeader';
 import StatusBadge from '@/components/StatusBadge';
 import { cn } from '@/lib/utils';
 import type { GatewayChatResponse } from '@shared/types';
+import { GatewayErrorCode } from '@shared/types';
+
+interface ErrorDisplay {
+  title: string;
+  message: string;
+  icon: any;
+  color: string;
+  bgClass: string;
+  retryable: boolean;
+  code: string;
+}
+
+function getErrorDisplay(err: GatewayClientError): ErrorDisplay {
+  if (err.isPoolError()) {
+    return {
+      title: '连接池繁忙',
+      message: err.message,
+      icon: ServerCrash,
+      color: 'text-warning',
+      bgClass: 'bg-warning/10 border-warning/30',
+      retryable: true,
+      code: err.code,
+    };
+  }
+  if (err.isImageError()) {
+    return {
+      title: '图片处理失败',
+      message: err.message,
+      icon: ImageOff,
+      color: 'text-danger',
+      bgClass: 'bg-danger/10 border-danger/30',
+      retryable: false,
+      code: err.code,
+    };
+  }
+  switch (err.code) {
+    case GatewayErrorCode.MODEL_NOT_FOUND:
+      return {
+        title: '模型未找到',
+        message: err.message,
+        icon: AlertCircle,
+        color: 'text-danger',
+        bgClass: 'bg-danger/10 border-danger/30',
+        retryable: false,
+        code: err.code,
+      };
+    case GatewayErrorCode.MODEL_DISABLED:
+      return {
+        title: '模型已禁用',
+        message: err.message,
+        icon: AlertCircle,
+        color: 'text-warning',
+        bgClass: 'bg-warning/10 border-warning/30',
+        retryable: false,
+        code: err.code,
+      };
+    case GatewayErrorCode.PAYLOAD_TOO_LARGE:
+      return {
+        title: '请求体过大',
+        message: err.message,
+        icon: ImageOff,
+        color: 'text-danger',
+        bgClass: 'bg-danger/10 border-danger/30',
+        retryable: false,
+        code: err.code,
+      };
+    case GatewayErrorCode.TEMPLATE_NOT_FOUND:
+      return {
+        title: '模板未找到',
+        message: err.message,
+        icon: AlertCircle,
+        color: 'text-danger',
+        bgClass: 'bg-danger/10 border-danger/30',
+        retryable: false,
+        code: err.code,
+      };
+    default:
+      return {
+        title: '内部错误',
+        message: err.message,
+        icon: AlertCircle,
+        color: 'text-danger',
+        bgClass: 'bg-danger/10 border-danger/30',
+        retryable: true,
+        code: err.code,
+      };
+  }
+}
 
 export default function Playground() {
   const { models, fetchModels, templates, fetchTemplates, gatewayChat } = useAppStore();
@@ -32,6 +124,7 @@ export default function Playground() {
   const [manualPrompt, setManualPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<GatewayChatResponse | null>(null);
+  const [error, setError] = useState<ErrorDisplay | null>(null);
   const [history, setHistory] = useState<GatewayChatResponse[]>([]);
 
   useEffect(() => {
@@ -62,6 +155,7 @@ export default function Playground() {
 
   const handleRun = async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await gatewayChat({
         templateId: templateId || undefined,
@@ -72,6 +166,20 @@ export default function Playground() {
       });
       setResult(res);
       setHistory([res, ...history].slice(0, 10));
+    } catch (err: any) {
+      if (err instanceof GatewayClientError) {
+        setError(getErrorDisplay(err));
+      } else {
+        setError({
+          title: '请求失败',
+          message: err.message || '未知错误',
+          icon: AlertCircle,
+          color: 'text-danger',
+          bgClass: 'bg-danger/10 border-danger/30',
+          retryable: false,
+          code: 'UNKNOWN',
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -79,6 +187,7 @@ export default function Playground() {
 
   const handleReset = () => {
     setResult(null);
+    setError(null);
     setVariables({});
     setManualPrompt('');
   };
@@ -308,6 +417,31 @@ export default function Playground() {
                 <div className="w-12 h-12 rounded-full border-2 border-brand-accent border-t-transparent animate-spin mx-auto mb-4" />
                 <p className="text-text-secondary">正在调用模型API...</p>
                 <p className="text-xs text-text-muted mt-1">请稍候，网关正在处理请求</p>
+              </div>
+            </div>
+          ) : error ? (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="max-w-md w-full">
+                <div className={cn('p-6 rounded-xl border', error.bgClass)}>
+                  <div className="flex items-start gap-4">
+                    <error.icon className={cn('w-8 h-8 shrink-0', error.color)} />
+                    <div className="flex-1 min-w-0">
+                      <h4 className={cn('font-display font-semibold text-lg', error.color)}>{error.title}</h4>
+                      <p className="text-sm text-text-secondary mt-2 leading-relaxed">{error.message}</p>
+                      <div className="mt-3 flex items-center gap-2">
+                        <code className="text-xs px-2 py-1 rounded bg-bg-primary font-mono text-text-muted">{error.code}</code>
+                      </div>
+                      {error.retryable && (
+                        <button
+                          className="mt-4 btn-secondary flex items-center gap-2 text-sm"
+                          onClick={handleRun}
+                        >
+                          <RefreshCw className="w-4 h-4" /> 重试请求
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           ) : result ? (

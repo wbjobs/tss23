@@ -1,16 +1,49 @@
 import { create } from 'zustand';
-import type {
-  ModelConfig,
-  PromptTemplate,
-  CallLog,
-  StatsSummary,
-  TrendDataPoint,
-  ModelDistribution,
-  AssertionRule,
-  EvaluationReport,
-  GatewayChatRequest,
-  GatewayChatResponse,
+import {
+  type ModelConfig,
+  type PromptTemplate,
+  type CallLog,
+  type StatsSummary,
+  type TrendDataPoint,
+  type ModelDistribution,
+  type AssertionRule,
+  type EvaluationReport,
+  type GatewayChatRequest,
+  type GatewayChatResponse,
+  type GatewayErrorResponse,
+  type ImageConstraints,
+  GatewayErrorCode,
 } from '@shared/types';
+
+export class GatewayClientError extends Error {
+  code: GatewayErrorCode;
+  detail?: string;
+  httpStatus: number;
+
+  constructor(errorResponse: GatewayErrorResponse, httpStatus: number) {
+    super(errorResponse.message);
+    this.code = errorResponse.code;
+    this.detail = errorResponse.detail;
+    this.httpStatus = httpStatus;
+    this.name = 'GatewayClientError';
+  }
+
+  isPoolError() {
+    return this.code === GatewayErrorCode.POOL_EXHAUSTED || this.code === GatewayErrorCode.POOL_QUEUE_TIMEOUT;
+  }
+
+  isImageError() {
+    return (
+      this.code === GatewayErrorCode.IMAGE_TOO_LARGE ||
+      this.code === GatewayErrorCode.IMAGE_FETCH_FAILED ||
+      this.code === GatewayErrorCode.IMAGE_ENCODING_FAILED
+    );
+  }
+
+  isRetryable() {
+    return this.isPoolError() || this.code === GatewayErrorCode.INTERNAL_ERROR;
+  }
+}
 
 interface AppState {
   models: ModelConfig[];
@@ -24,6 +57,7 @@ interface AppState {
   reports: Record<string, EvaluationReport>;
   loading: Record<string, boolean>;
   sidebarCollapsed: boolean;
+  imageConstraints: ImageConstraints | null;
 
   setSidebarCollapsed: (v: boolean) => void;
   fetchModels: () => Promise<void>;
@@ -50,6 +84,7 @@ interface AppState {
   fetchStats: () => Promise<void>;
   fetchTrends: (days?: number) => Promise<void>;
   fetchDistribution: () => Promise<void>;
+  fetchImageConstraints: () => Promise<void>;
 
   gatewayChat: (req: GatewayChatRequest) => Promise<GatewayChatResponse>;
 }
@@ -59,7 +94,17 @@ const asyncFetch = async <T,>(url: string, options?: RequestInit): Promise<T> =>
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
-  if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+  if (!res.ok) {
+    try {
+      const errorBody = await res.json();
+      if (errorBody && errorBody.code) {
+        throw new GatewayClientError(errorBody as GatewayErrorResponse, res.status);
+      }
+    } catch (e) {
+      if (e instanceof GatewayClientError) throw e;
+    }
+    throw new Error(`Request failed: ${res.status}`);
+  }
   return res.json() as Promise<T>;
 };
 
@@ -75,6 +120,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   reports: {},
   loading: {},
   sidebarCollapsed: false,
+  imageConstraints: null,
 
   setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
 
@@ -235,6 +281,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   fetchDistribution: async () => {
     const data = await asyncFetch<ModelDistribution[]>('/api/stats/distribution');
     set({ modelDistribution: data });
+  },
+
+  fetchImageConstraints: async () => {
+    try {
+      const data = await asyncFetch<ImageConstraints>('/api/gateway/constraints');
+      set({ imageConstraints: data });
+    } catch {
+      set({
+        imageConstraints: {
+          MAX_IMAGE_SIZE_MB: 5,
+          MAX_TOTAL_PAYLOAD_MB: 20,
+          ALLOWED_IMAGE_TYPES: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'],
+          ALLOWED_IMAGE_EXTENSIONS: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'],
+        },
+      });
+    }
   },
 
   gatewayChat: async (req) => {
